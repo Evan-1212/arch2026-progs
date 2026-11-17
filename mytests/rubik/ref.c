@@ -33,9 +33,20 @@
  *   ref edge          bfs, then invalid input (-1, output untouched) and the
  *                     cap rule (-2) on sampled states, every cap from 0 to
  *                     the length plus 2
+ *   ref inputs K      bfs, then the inputs of the target check: every state
+ *                     of distance 11, K states drawn from the search order
+ *                     with the fixed-seed generator, and the
+ *                     tests/rubikvec.h states, one "@@input kind state
+ *                     distance" line each
+ *   ref replay FILE   bfs, then results recorded elsewhere (rv32emu runs of
+ *                     rubik_solve_asm): each line of FILE is a state, the
+ *                     returned length and the text, separated by single
+ *                     tabs; the length must be the breadth-first distance
+ *                     and the text must solve the state in that many moves
  * Exit status: 0 when every check passes, 1 on any failure, 2 on bad usage.
  *
  * Build and run: bash mytests/rubik/run.sh <output-dir> [K]
+ * The modes inputs and replay are used by mytests/rubik/target/verify.sh.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -682,10 +693,98 @@ static int run_edge(void)
     return edge_fail == 0 && cap_fail == 0;
 }
 
+/* The inputs of the target check, as "@@input kind state distance" lines. */
+static int print_inputs(uint64_t k)
+{
+    char s[RUBIK_STATE_LEN + 1];
+    uint64_t bad = 0;
+    for (uint64_t i = level_start[MAXLEN]; i < level_start[MAXLEN + 1]; i++) {
+        cube q = cube_of(order[i]);
+        if (!text_from_cube(&q, s)) {
+            bad++;
+            continue;
+        }
+        printf("@@input far %s %d\n", s, MAXLEN);
+    }
+    for (uint64_t i = 0; i < k; i++) {
+        cube q = cube_of(order[next_rand() % total]);
+        if (!text_from_cube(&q, s)) {
+            bad++;
+            continue;
+        }
+        printf("@@input random %s %d\n", s, distance_of(&q));
+    }
+    for (size_t i = 0; i < RUBIK_NCASES; i++)
+        printf("@@input vector %s %d\n", rubik_cases[i].state,
+               rubik_cases[i].distance);
+    printf("inputs: far=%llu random=%llu vectors=%zu failures=%llu\n",
+           (unsigned long long) (level_start[MAXLEN + 1] - level_start[MAXLEN]),
+           (unsigned long long) k, (size_t) RUBIK_NCASES,
+           (unsigned long long) bad);
+    return bad == 0;
+}
+
+/* Checks recorded results: "state<TAB>length<TAB>text" per line. The state
+ * must be valid, the length its breadth-first distance, and the text must
+ * parse and solve the state in exactly that many moves. */
+static int replay(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        printf("replay: cannot open %s\n", path);
+        return 0;
+    }
+    char line[256];
+    uint64_t records = 0, bad = 0, sum = 0, hist[MAXLEN + 1] = {0};
+    cube goal = solved_cube();
+    while (fgets(line, sizeof line, f)) {
+        size_t len = strlen(line);
+        char *tab1 = strchr(line, '\t');
+        char *tab2 = tab1 ? strchr(tab1 + 1, '\t') : NULL;
+        int d = -1, m = -1;
+        long n = -9;
+        int ok = len > 0 && line[len - 1] == '\n' && tab2;
+        records++;
+        if (ok) {
+            char *end;
+            line[len - 1] = '\0';
+            *tab1 = *tab2 = '\0';
+            n = strtol(tab1 + 1, &end, 10);
+            ok = end != tab1 + 1 && *end == '\0' && valid_text(line);
+        }
+        if (ok) {
+            cube q = cube_from_text(line);
+            d = distance_of(&q);
+            m = apply_text(&q, tab2 + 1);
+            ok = d >= 0 && n == d && m == d && key_of(&q) == key_of(&goal);
+        }
+        if (ok) {
+            hist[d]++;
+            sum = sum * 1000003u + (uint64_t) d * 131u + strlen(tab2 + 1);
+            continue;
+        }
+        if (bad < 10)
+            printf(
+                "replay FAIL record %llu: distance %d, length %ld, moves %d\n",
+                (unsigned long long) records, d, n, m);
+        bad++;
+    }
+    int read_error = ferror(f);
+    fclose(f);
+    for (int d = 0; d <= MAXLEN; d++)
+        printf("replay: distance %2d records=%llu\n", d,
+               (unsigned long long) hist[d]);
+    printf("replay: records=%llu failures=%llu checksum=%016llx\n",
+           (unsigned long long) records, (unsigned long long) bad,
+           (unsigned long long) sum);
+    return records > 0 && bad == 0 && !read_error;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fputs("usage: ref bfs|all|sample K|edge\n", stderr);
+        fputs("usage: ref bfs|all|sample K|edge|inputs K|replay FILE\n",
+              stderr);
         return 2;
     }
     if (!build_geometry()) {
@@ -707,8 +806,13 @@ int main(int argc, char **argv)
         ok &= solve_all(strtoull(argv[2], NULL, 10));
     else if (strcmp(argv[1], "edge") == 0)
         ok &= run_edge();
+    else if (strcmp(argv[1], "inputs") == 0 && argc == 3)
+        ok &= print_inputs(strtoull(argv[2], NULL, 10));
+    else if (strcmp(argv[1], "replay") == 0 && argc == 3)
+        ok &= replay(argv[2]);
     else if (strcmp(argv[1], "bfs") != 0) {
-        fputs("usage: ref bfs|all|sample K|edge\n", stderr);
+        fputs("usage: ref bfs|all|sample K|edge|inputs K|replay FILE\n",
+              stderr);
         return 2;
     }
     printf("result: %s\n", ok ? "PASS" : "FAIL");

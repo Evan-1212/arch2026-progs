@@ -26,7 +26,8 @@
  *
  * Usage:
  *   gen_tables c     C header for src/rubik/rubik_tables.h (static const)
- *   gen_tables asm   GNU as source with local labels (no .globl)
+ *   gen_tables asm   GNU as source for src/rubik/rubik_tables.inc, included
+ *                    by rubik.S; local labels (no .globl)
  * Both write to stdout. Exit status 0 on success, 1 when a self-check fails,
  * 2 on bad usage.
  *
